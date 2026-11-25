@@ -1,0 +1,10 @@
+target-version = "py312"
+line-length = 120
+extend-exclude = [".venv", "alembic/versions"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003", "B008"]  # кириллица в строках; Depends() в аргументах — норма FastAPI
+
+[lint.per-file-ignores]
+"scripts/*" = ["E402"]  # DATABASE_URL выставляется до импорта приложения
