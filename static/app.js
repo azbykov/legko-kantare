@@ -13,6 +13,25 @@ const store = {
 $("actor").value = store.get("actor");
 $("actor").onchange = () => store.set("actor", $("actor").value.trim());
 
+const FIELD_LABELS = { name: "Название", countries: "Гео", country: "Гео", offer_id: "Оффер" };
+
+// FastAPI отдаёт 422 как список {loc, msg, type, ctx}; превращаем его в строки «Поле: что не так».
+function validationText(items) {
+  return items.map((e) => {
+    const field = (e.loc || []).filter((p) => p !== "body" && typeof p === "string").pop();
+    const label = FIELD_LABELS[field] || field;
+    let text;
+    if (e.type === "value_error") text = String(e.msg || "").replace(/^Value error,\s*/, "");
+    else if (e.type === "missing") text = "обязательное поле";
+    else if (e.type === "too_short") text = `слишком мало значений (минимум ${e.ctx?.min_length})`;
+    else if (e.type === "too_long") text = `слишком много значений (максимум ${e.ctx?.max_length})`;
+    else if (e.type === "string_too_long") text = `слишком длинно (максимум ${e.ctx?.max_length} символов)`;
+    else if (e.type?.startsWith("int_")) text = "нужно целое число";
+    else text = e.msg;
+    return label && !text.startsWith(label) ? `${label}: ${text}` : text;
+  }).join("\n");
+}
+
 async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json" };
   const actor = $("actor").value.trim();
@@ -21,7 +40,8 @@ async function api(path, opts = {}) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     const d = data.detail;
-    const err = new Error(typeof d === "string" ? d : JSON.stringify(d) || r.statusText);
+    const text = typeof d === "string" ? d : Array.isArray(d) ? validationText(d) : d ? JSON.stringify(d) : "";
+    const err = new Error(text || `${r.status} ${r.statusText}`);
     err.code = data.code;
     throw err;
   }
@@ -32,8 +52,6 @@ function show(el, text, kind) {
   el.innerHTML = text ? `<div class="msg ${kind}">${esc(text)}</div>` : "";
 }
 
-const offerLabel = (o) => `${o.id} — ${o.name}${o.country.length ? " [" + o.country.join(",") + "]" : ""}`;
-const offerOptions = (items) => items.map((o) => `<option value="${o.id}">${esc(offerLabel(o))}</option>`).join("");
 
 function tab(name, campaignId) {
   for (const t of ["create", "edit"]) {
@@ -90,112 +108,148 @@ function hl(text, q) {
   return i < 0 ? esc(text) : esc(text.slice(0, i)) + "<mark>" + esc(text.slice(i, i + q.length)) + "</mark>" + esc(text.slice(i + q.length));
 }
 
-const combo = { found: [], active: -1, LIMIT: 80 };
 const offerById = (id) => offers.find((o) => String(o.id) === String(id));
 const selectedLabel = (o) => `#${o.id} · ${offerParts(o).title}`;
 
-function openCombo() {
-  $("c-offer-combo").classList.add("open");
-  $("c-offer-list").classList.remove("hide");
-  $("c-offer-q").setAttribute("aria-expanded", "true");
-}
-function closeCombo() {
-  $("c-offer-combo").classList.remove("open");
-  $("c-offer-list").classList.add("hide");
-  $("c-offer-q").setAttribute("aria-expanded", "false");
-  $("c-offer-q").removeAttribute("aria-activedescendant");
-  const o = offerById($("c-offer").value);
-  $("c-offer-q").value = o ? selectedLabel(o) : ""; // вернуть подпись выбранного, если поиск бросили
-}
+// Разметка комбобокса для динамических мест (редактор). В форме создания она в index.html.
+const comboMarkup = (attrs, placeholder) => `<div class="combo" ${attrs}>
+  <input class="combo-input" role="combobox" aria-autocomplete="list" aria-expanded="false"
+         placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false">
+  <button type="button" class="combo-clear hide" aria-label="Сбросить оффер">×</button>
+  <span class="combo-caret" aria-hidden="true"></span>
+  <ul class="combo-list hide" role="listbox" aria-label="Офферы"></ul></div>`;
 
-function renderOfferPicker() {
-  const raw = $("c-offer-q").value.trim().toLowerCase();
-  const chosen = offerById($("c-offer").value);
-  const q = chosen && $("c-offer-q").value === selectedLabel(chosen) ? "" : raw; // в поле подпись выбранного — показать всё
-  combo.found = offers.filter((o) => matchOffer(o, q));
-  const shown = combo.found.slice(0, combo.LIMIT);
-  const sel = $("c-offer").value;
-  combo.active = Math.max(0, shown.findIndex((o) => String(o.id) === sel));
-  if (!shown.length) combo.active = -1;
-  $("c-offer-list").innerHTML = shown.length
-    ? shown.map((o, i) => {
-        const p = offerParts(o);
-        return `<li class="combo-opt" role="option" id="c-offer-opt-${o.id}" data-id="${o.id}" aria-selected="${String(o.id) === sel}">
-          <span class="combo-id">${hl(String(o.id), q)}</span>
-          <span class="combo-title">${hl(p.title, q)}</span>
-          <span class="combo-net">${hl(p.net, q)}</span>
-          <span class="combo-meta">${o.country.map((c) => `<span class="chip geo">${esc(c)}</span>`).join("")}${p.tags.map((t) => `<span class="chip">${hl(t, q)}</span>`).join("")}</span>
-        </li>`;
-      }).join("") + (combo.found.length > shown.length ? `<li class="combo-more">Ещё ${combo.found.length - shown.length} — уточните поиск</li>` : "")
-    : `<li class="combo-empty">Ничего не найдено</li>`;
-  $("c-offer-count").textContent = q ? `Найдено: ${combo.found.length} из ${offers.length}` : `Всего офферов: ${offers.length}`;
-  highlightActive(false);
-}
+// Комбобокс выбора оффера: поиск по id и названию, ↑ ↓ Enter Esc, подсветка совпадений.
+// items() — из каких офферов выбирать; onEnter — Enter при закрытом списке и выбранном оффере.
+let comboSeq = 0;
+function mountCombo(root, { items, countEl = null, onEnter = null }) {
+  const input = root.querySelector(".combo-input");
+  const list = root.querySelector(".combo-list");
+  const clear = root.querySelector(".combo-clear");
+  const hidden = root.querySelector(".combo-value"); // необязательно: для форм
+  const uid = root.id || `combo-${++comboSeq}`;
+  list.id = `${uid}-list`;
+  input.setAttribute("aria-controls", list.id);
+  const st = { value: "", found: [], active: -1, LIMIT: 80 };
+  const isOpen = () => !list.classList.contains("hide");
 
-function highlightActive(scroll = true) {
-  const items = $("c-offer-list").querySelectorAll(".combo-opt");
-  items.forEach((el, i) => el.classList.toggle("active", i === combo.active));
-  const el = items[combo.active];
-  if (el) {
-    $("c-offer-q").setAttribute("aria-activedescendant", el.id);
-    if (scroll) el.scrollIntoView({ block: "nearest" });
+  function setValue(id) {
+    st.value = id ? String(id) : "";
+    if (hidden) hidden.value = st.value;
+    clear.classList.toggle("hide", !st.value);
   }
-}
-
-function chooseOffer(id) {
-  const o = offerById(id);
-  if (!o) return;
-  $("c-offer").value = String(o.id);
-  $("c-offer-clear").classList.remove("hide");
-  closeCombo();
-}
-
-$("c-offer-q").addEventListener("focus", () => { $("c-offer-q").select(); renderOfferPicker(); openCombo(); });
-$("c-offer-q").addEventListener("input", () => { renderOfferPicker(); openCombo(); });
-$("c-offer-q").addEventListener("keydown", (e) => {
-  const n = Math.min(combo.found.length, combo.LIMIT);
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    e.preventDefault();
-    if ($("c-offer-list").classList.contains("hide")) { renderOfferPicker(); openCombo(); return; }
-    if (!n) return;
-    combo.active = (combo.active + (e.key === "ArrowDown" ? 1 : -1) + n) % n;
-    highlightActive();
-  } else if (e.key === "Enter") {
-    if (!$("c-offer-list").classList.contains("hide") && combo.active >= 0) {
-      e.preventDefault(); // Enter в открытом списке выбирает, а не отправляет форму
-      chooseOffer(combo.found[combo.active].id);
+  function open() {
+    root.classList.add("open");
+    list.classList.remove("hide");
+    input.setAttribute("aria-expanded", "true");
+  }
+  function close() {
+    root.classList.remove("open");
+    list.classList.add("hide");
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    const o = offerById(st.value);
+    input.value = o ? selectedLabel(o) : ""; // вернуть подпись выбранного, если поиск бросили
+    if (countEl) countEl.textContent = `Всего офферов: ${items().length}`;
+  }
+  function highlight(scroll = true) {
+    const opts = list.querySelectorAll(".combo-opt");
+    opts.forEach((el, i) => el.classList.toggle("active", i === st.active));
+    const el = opts[st.active];
+    if (el) {
+      input.setAttribute("aria-activedescendant", el.id);
+      if (scroll) el.scrollIntoView({ block: "nearest" });
     }
-  } else if (e.key === "Escape") {
-    if (!$("c-offer-list").classList.contains("hide")) { e.preventDefault(); closeCombo(); }
-  } else if (e.key === "Tab") {
-    closeCombo();
   }
-});
-$("c-offer-list").addEventListener("mousedown", (e) => {
-  const li = e.target.closest(".combo-opt");
-  if (!li) return;
-  e.preventDefault(); // не терять фокус до выбора
-  chooseOffer(li.dataset.id);
-});
-$("c-offer-list").addEventListener("mousemove", (e) => {
-  const li = e.target.closest(".combo-opt");
-  if (!li) return;
-  const i = [...$("c-offer-list").querySelectorAll(".combo-opt")].indexOf(li);
-  if (i !== combo.active) { combo.active = i; highlightActive(false); }
-});
-$("c-offer-q").addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== $("c-offer-q")) closeCombo(); }, 0));
-$("c-offer-clear").onclick = () => {
-  $("c-offer").value = "";
-  $("c-offer-clear").classList.add("hide");
-  $("c-offer-q").value = "";
-  $("c-offer-q").focus();
-};
+  function render() {
+    const all = items();
+    const chosen = offerById(st.value);
+    const raw = input.value.trim().toLowerCase();
+    const q = chosen && input.value === selectedLabel(chosen) ? "" : raw; // в поле подпись выбранного — показать всё
+    st.found = all.filter((o) => matchOffer(o, q));
+    const shown = st.found.slice(0, st.LIMIT);
+    st.active = shown.length ? Math.max(0, shown.findIndex((o) => String(o.id) === st.value)) : -1;
+    list.innerHTML = shown.length
+      ? shown.map((o) => {
+          const p = offerParts(o);
+          return `<li class="combo-opt" role="option" id="${uid}-opt-${o.id}" data-id="${o.id}" aria-selected="${String(o.id) === st.value}">
+            <span class="combo-id">${hl(String(o.id), q)}</span>
+            <span class="combo-title">${hl(p.title, q)}</span>
+            <span class="combo-net">${hl(p.net, q)}</span>
+            <span class="combo-meta">${o.country.map((c) => `<span class="chip geo">${esc(c)}</span>`).join("")}${p.tags.map((t) => `<span class="chip">${hl(t, q)}</span>`).join("")}</span>
+          </li>`;
+        }).join("") + (st.found.length > shown.length ? `<li class="combo-more">Ещё ${st.found.length - shown.length} — уточните поиск</li>` : "")
+      : `<li class="combo-empty">Ничего не найдено</li>`;
+    if (countEl) countEl.textContent = q ? `Найдено: ${st.found.length} из ${all.length}` : `Всего офферов: ${all.length}`;
+    highlight(false);
+  }
+  function choose(id) {
+    if (!offerById(id)) return;
+    setValue(id);
+    close();
+  }
+
+  let quiet = false; // фокус из кода (после добавления) — без раскрытия списка
+  input.addEventListener("focus", () => {
+    input.select();
+    if (quiet) { quiet = false; return; }
+    render();
+    open();
+  });
+  input.addEventListener("mousedown", () => { if (document.activeElement === input && !isOpen()) { render(); open(); } });
+  input.addEventListener("input", () => { render(); open(); });
+  input.addEventListener("keydown", (e) => {
+    const n = Math.min(st.found.length, st.LIMIT);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!isOpen()) { render(); open(); return; }
+      if (!n) return;
+      st.active = (st.active + (e.key === "ArrowDown" ? 1 : -1) + n) % n;
+      highlight();
+    } else if (e.key === "Enter") {
+      if (isOpen() && st.active >= 0) {
+        e.preventDefault(); // Enter в открытом списке выбирает, а не отправляет форму
+        choose(st.found[st.active].id);
+      } else if (!isOpen() && st.value && onEnter) {
+        e.preventDefault();
+        onEnter();
+      }
+    } else if (e.key === "Escape") {
+      if (isOpen()) { e.preventDefault(); close(); }
+    } else if (e.key === "Tab") {
+      close();
+    }
+  });
+  list.addEventListener("mousedown", (e) => {
+    const li = e.target.closest(".combo-opt");
+    if (!li) return;
+    e.preventDefault(); // не терять фокус до выбора
+    choose(li.dataset.id);
+  });
+  list.addEventListener("mousemove", (e) => {
+    const li = e.target.closest(".combo-opt");
+    if (!li) return;
+    const i = [...list.querySelectorAll(".combo-opt")].indexOf(li);
+    if (i !== st.active) { st.active = i; highlight(false); }
+  });
+  input.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== input) close(); }, 0));
+  clear.onclick = () => { setValue(""); input.value = ""; input.focus(); };
+
+  const api = {
+    get value() { return st.value; },
+    focus: ({ openList = true } = {}) => { quiet = !openList; input.focus(); },
+  };
+  root._combo = api;
+  return api;
+}
+
+const offerCombo = mountCombo($("c-offer-combo"), { items: () => offers, countEl: $("c-offer-count") });
 
 $("create-form").onsubmit = async (e) => {
   e.preventDefault();
-  if (!$("c-offer").value) {
+  if (!offerCombo.value) {
     show($("c-msg"), "Выберите оффер", "err");
-    $("c-offer-q").focus();
+    offerCombo.focus();
     return;
   }
   $("c-submit").disabled = true;
@@ -203,7 +257,7 @@ $("create-form").onsubmit = async (e) => {
   try {
     const c = await api("/campaigns", {
       method: "POST",
-      body: { name: $("c-name").value, countries: parseCountries($("c-country").value), offer_id: +$("c-offer").value },
+      body: { name: $("c-name").value, countries: parseCountries($("c-country").value), offer_id: +offerCombo.value },
     });
     renderCreated(c);
     $("c-name").value = "";
@@ -267,15 +321,46 @@ $("e-list").onclick = (e) => {
 
 // ---- редактор кампании
 async function loadCampaign() {
-  $("e-streams").innerHTML = "";
-  if (!current) return;
+  if (!current) { $("e-streams").innerHTML = ""; return; }
   try {
     const c = await api("/campaigns/" + current);
+    // старое содержимое меняем только когда пришёл ответ — без мигания пустого экрана
     $("e-streams").innerHTML = `<div class="card"><h2>${esc(c.name)} <span class="muted">#${c.id} · ${esc(c.state)}</span></h2></div>` +
       c.streams.map(renderStream).join("");
+    for (const s of c.streams) mountStreamCombo(s);
   } catch (err) {
     show($("e-msg"), err.message, "err");
   }
+}
+
+const streamCard = (sid) => $("e-streams").querySelector(`[data-stream="${sid}"]`);
+
+function mountStreamCombo(s) {
+  const root = $("e-streams").querySelector(`[data-combo-stream="${s.id}"]`);
+  if (!root) return null;
+  const used = new Set(s.offers.map((o) => o.offer_id));
+  const free = offers.filter((o) => !used.has(o.id));
+  return mountCombo(root, { items: () => free, onEnter: () => root.closest(".row").querySelector("[data-add]").click() });
+}
+
+// Перерисовать одну карточку потока по свежим данным — без перезагрузки остального редактора.
+async function refreshStream(sid, note) {
+  const c = await api("/campaigns/" + current);
+  const s = c.streams.find((x) => String(x.id) === String(sid));
+  const old = streamCard(sid);
+  if (!s || !old) return loadCampaign();
+  const tmp = document.createElement("div");
+  tmp.innerHTML = renderStream(s);
+  old.replaceWith(tmp.firstElementChild);
+  const picker = mountStreamCombo(s);
+  if (note) showInStream(sid, note, "ok");
+  picker?.focus({ openList: false }); // сразу можно искать следующий оффер, сообщение не закрыто списком
+}
+
+function showInStream(sid, text, kind) {
+  const box = streamCard(sid)?.querySelector(".stream-msg");
+  if (box) box.innerHTML = text ? `<div class="msg ${kind}">${esc(text)}</div>` : "";
+  else show($("e-msg"), text, kind);
 }
 
 function renderStream(s) {
@@ -298,33 +383,48 @@ function renderStream(s) {
   return `<div class="card" data-stream="${s.id}" data-version="${esc(s.version)}">${head}
     <table><tr><th>ID</th><th>Оффер</th><th>Доля</th><th></th></tr>${rows}</table>
     <div class="total ${ok ? "ok" : "bad"}" style="margin:8px 0">Сумма долей: ${s.share_total}%</div>
-    <div class="row"><select data-sel="${s.id}" ${free.length ? "" : "disabled"}>${free.length ? offerOptions(free) : "<option>Все офферы уже в потоке</option>"}</select>
-    <button class="primary" data-add="${s.id}" ${free.length ? "" : "disabled"}>Добавить оффер</button></div></div>`;
+    <div class="row">${free.length ? comboMarkup(`data-combo-stream="${s.id}"`, "Найдите оффер для добавления") : '<input disabled placeholder="Все офферы уже в потоке">'}
+    <button class="primary" data-add="${s.id}" ${free.length ? "" : "disabled"}>Добавить оффер</button></div>
+    <div class="stream-msg"></div></div>`;
 }
 
 $("e-streams").onclick = async (e) => {
   const b = e.target.closest("button");
   if (!b || b.disabled || !current) return;
-  b.disabled = true;
+  if (b.classList.contains("combo-clear")) return; // крестик комбобокса обрабатывает сам комбобокс
+  const card = b.closest("[data-stream]");
+  const sid = card?.dataset.stream;
+  if (!sid) return;
   show($("e-msg"), "");
+  showInStream(sid, "");
   // версия потока, который видит пользователь: сервер откажет, если поток уже изменили
-  const version = b.closest("[data-version]")?.dataset.version || "";
+  const version = card.dataset.version || "";
+  b.disabled = true;
   try {
     if (b.dataset.add) {
-      const sel = document.querySelector(`[data-sel="${b.dataset.add}"]`);
-      await api(`/campaigns/${current}/streams/${b.dataset.add}/offers`, { method: "POST", body: { offer_id: +sel.value, version } });
+      const picker = card.querySelector("[data-combo-stream]")._combo;
+      if (!picker.value) {
+        showInStream(sid, "Выберите оффер для добавления", "err");
+        picker.focus();
+        return;
+      }
+      const name = offerById(picker.value) ? selectedLabel(offerById(picker.value)) : `#${picker.value}`;
+      await api(`/campaigns/${current}/streams/${sid}/offers`, { method: "POST", body: { offer_id: +picker.value, version } });
+      await refreshStream(sid, `Добавлен ${name}`);
     } else if (b.dataset.rm) {
-      const [sid, oid] = b.dataset.rm.split(":");
+      const oid = b.dataset.rm.split(":")[1];
       if (!confirm(`Удалить оффер ${oid} из потока?`)) return;
       await api(`/campaigns/${current}/streams/${sid}/offers/${oid}?` + new URLSearchParams({ version }), { method: "DELETE" });
+      await refreshStream(sid, `Удалён оффер #${oid}`);
+    } else if (b.dataset.reload) {
+      await refreshStream(sid);
     }
-    await loadCampaign();
   } catch (err) {
     if (err.code === "StaleStream") {
-      $("e-msg").innerHTML = `<div class="msg err">${esc(err.message)} <button id="e-reload">Обновить</button></div>`;
-      $("e-reload").onclick = () => { show($("e-msg"), ""); loadCampaign(); };
+      const box = streamCard(sid)?.querySelector(".stream-msg");
+      if (box) box.innerHTML = `<div class="msg err">${esc(err.message)} <button data-reload="1">Обновить поток</button></div>`;
     } else {
-      show($("e-msg"), err.message, "err");
+      showInStream(sid, err.message, "err");
     }
   } finally {
     b.disabled = false;

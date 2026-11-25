@@ -17,7 +17,7 @@
   nav button.on { background:var(--acc); color:#fff; border-color:var(--acc) }
   button.danger { color:var(--bad) } button:disabled { opacity:.5; cursor:default }
   table { width:100%; border-collapse:collapse } td,th { text-align:left; padding:8px 4px; border-bottom:1px solid var(--line) }
-  .msg { padding:10px; border-radius:8px; margin-top:12px } .msg.err { color:var(--bad); border:1px solid var(--bad) } .msg.ok { color:var(--ok); border:1px solid var(--ok) }
+  .msg { padding:10px; border-radius:8px; margin-top:12px; white-space:pre-line } .msg.err { color:var(--bad); border:1px solid var(--bad) } .msg.ok { color:var(--ok); border:1px solid var(--ok) }
   .row { display:flex; gap:8px } .row > :first-child { flex:1 } .muted { color:var(--muted); font-size:13px }
   .pager { display:flex; gap:8px; align-items:center; margin-top:10px } .pager span { flex:1; text-align:center }
   tr.pick { cursor:pointer } tr.pick:hover td, tr.pick.on td { background:color-mix(in srgb, var(--acc) 10%, transparent) }
@@ -69,12 +69,12 @@
       <input id="c-country" required maxlength="120" placeholder="US, DE, FR" style="text-transform:uppercase">
       <label>Оффер</label>
       <div class="combo" id="c-offer-combo">
-        <input id="c-offer-q" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="c-offer-list"
+        <input id="c-offer-q" class="combo-input" role="combobox" aria-autocomplete="list" aria-expanded="false"
                placeholder="Найдите оффер по id или названию" autocomplete="off" spellcheck="false">
-        <button type="button" class="combo-clear hide" id="c-offer-clear" aria-label="Сбросить оффер">×</button>
+        <button type="button" class="combo-clear hide" aria-label="Сбросить оффер">×</button>
         <span class="combo-caret" aria-hidden="true"></span>
-        <input type="hidden" id="c-offer">
-        <ul class="combo-list hide" id="c-offer-list" role="listbox" aria-label="Офферы"></ul>
+        <input type="hidden" id="c-offer" class="combo-value">
+        <ul class="combo-list hide" role="listbox" aria-label="Офферы"></ul>
       </div>
       <div class="muted" id="c-offer-count"></div>
       <div style="margin-top:14px"><button class="primary" id="c-submit">Создать</button></div>
